@@ -42,11 +42,13 @@ const SECRET_PATTERNS = {
     label: 'JWT_TOKEN'
   },
   BEARER_TOKEN: {
-    pattern: /Bearer\s+([a-zA-Z0-9\-._~+/]+=*)/g, // Added capture group
+    // Require at least 20 chars so the plain word "token" is never flagged
+    pattern: /Bearer\s+([a-zA-Z0-9\-._~+/]{20,}=*)/g,
     label: 'BEARER_TOKEN'
   },
   PRIVATE_KEY: {
-    pattern: /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----/g,
+    // Explicitly lists known key types: RSA, OPENSSH, EC, DSA, PGP, ENCRYPTED, bare
+    pattern: /-----BEGIN\s+(?:RSA |OPENSSH |EC |DSA |PGP |ENCRYPTED )?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA |OPENSSH |EC |DSA |PGP |ENCRYPTED )?PRIVATE\s+KEY-----/g,
     label: 'PRIVATE_KEY'
   },
   PASSWORD_ASSIGNMENT: {
@@ -56,16 +58,19 @@ const SECRET_PATTERNS = {
 
   // 2. NEW: Semantic Context Detection
   SEMANTIC_PASSWORD: {
-    // Looks for trigger words, then captures the string inside quotes
-    pattern: /(?:password|secret|pwd)[^'"]*['"]([^'"]+)['"]/gi,
+    // Trigger on specific assignment keywords only. 'token'/'auth' removed to avoid
+    // flagging common words (e.g., 'Bearer token', 'auth' in URLs).
+    // Minimum 8 chars to avoid flagging short config values.
+    pattern: /(?:password|secret|pwd|apikey|api_key|jwtSecret|initialPassword|credential)\s*[:=]\s*['"]([^'"]{8,})['"](?!\s*\.)/gi,
     label: 'SEMANTIC_PASSWORD'
   },
 
   // 3. PII Detection
   PHONE_NUMBER: {
-    // Handles +1 (415) 555-0192, 800-867-5309, +91-98765-43210 etc.
-    // Note: UUID segments are filtered out via the post-filter in scanWithRegex below.
-    pattern: /(?:\+\d{1,3}[-\s]?)?(?:\(?\d{2,5}\)?[-\s]?)(?:\d{3,5}[-\s]?){1,2}\d{4,5}(?=\s|$|[^\d])/g,
+    // Matches real phone numbers: +1 (415) 555-0192, 800-867-5309, +91-98765-43210
+    // Must be preceded by a non-digit/non-letter and followed by whitespace, end, or punctuation.
+    // The leading/trailing [^\w] guards prevent matching digit-runs inside API tokens.
+    pattern: /(?<![\w])(?:\+\d{1,3}[\s-])?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}(?![\w-])/g,
     label: 'PHONE_NUMBER'
   },
 
@@ -80,16 +85,34 @@ const SECRET_PATTERNS = {
 
   // 5. New provider tokens
   GITHUB_PAT: {
-    pattern: /\bghp_[a-zA-Z0-9]{36}\b/g,
+    // Covers classic (ghp_), fine-grained (github_pat_), and refresh (ghr_) tokens
+    pattern: /\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[a-zA-Z0-9_]{36,}\b/g,
     label: 'GITHUB_PAT'
   },
   SLACK_TOKEN: {
     pattern: /\bxox[bpars]-[0-9A-Za-z-]{10,}\b/g,
     label: 'SLACK_TOKEN'
   },
+  SLACK_WEBHOOK: {
+    // Detects Slack Webhook URLs: https://hooks.slack.com/services/T.../B.../XXXX
+    // Final path segment is mixed-case alphanumeric (at least 20 chars)
+    pattern: /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9]{8,12}\/[A-Za-z0-9]{8,12}\/[a-zA-Z0-9]{20,}/g,
+    label: 'SLACK_WEBHOOK'
+  },
   HUGGINGFACE_TOKEN: {
     pattern: /\bhf_[a-zA-Z0-9]{20,}\b/g,
     label: 'HUGGINGFACE_TOKEN'
+  },
+
+  // 6. URI / Connection String Passwords
+  URI_PASSWORD: {
+    // Catches passwords embedded in connection string URIs:
+    // e.g. mysql://user:p@ssword@host  or  redis://:p@ssword@host
+    // Uses a named group for reliable capture regardless of match[0] content.
+    // Requires password to be at least 6 chars to avoid matching port numbers.
+    pattern: /\b(?:mysql|mongodb|postgres|postgresql|redis|amqp|ftp|sftp):(?:\/\/)[^:@\s"']*:(?!\d{1,5}@)([^:@\s"'\/]{6,})@/g,
+    label: 'URI_PASSWORD',
+    captureGroup: 1
   }
 };
 
