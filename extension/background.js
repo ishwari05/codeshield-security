@@ -308,7 +308,7 @@ class ShoonyaBackground {
 
   async handleScanComplete(data, sender) {
     this.stats.totalScans++;
-    
+
     if (data.secretsFound && data.secretsFound.length > 0) {
       this.stats.secretsBlocked += data.secretsFound.length;
 
@@ -327,10 +327,12 @@ class ShoonyaBackground {
     try {
       const platform = this.getPlatformFromUrl(tab?.url || 'Other');
       const now = Date.now();
-      
+
+      // Collect all valid payloads first (with dedup check)
+      const payloads = [];
       for (const secret of secrets) {
         const eventKey = `${tab?.id || 'background'}-${platform}-${secret.type}-${secret.value?.substring(0, 10)}`;
-        
+
         const lastLogged = this.recentLogs.get(eventKey);
         if (lastLogged && (now - lastLogged < 5000)) {
           console.log(`🛡️ Shoonya: Suppressed duplicate log for ${secret.type}`);
@@ -338,29 +340,29 @@ class ShoonyaBackground {
         }
 
         this.recentLogs.set(eventKey, now);
-        
-        const payload = {
+
+        payloads.push({
           type: this.mapSecretType(secret.type),
           platform: platform,
           risk_score: secret.riskScore || (secret.type === 'HIGH_ENTROPY_SECRET' ? 85 : 50),
           action: 'REDACTED',
           timestamp: new Date().toISOString(),
           details: `Detected ${secret.type}`
-        };
-
-        // OFFLINE FIRST: Store the log securely in extension storage instead of backend API
-        chrome.storage.local.get({ events: [] }).then(result => {
-          let events = result.events;
-          events.unshift(payload); // Add to beginning
-          if (events.length > 500) events = events.slice(0, 500); // Cap at 500 to save space
-          chrome.storage.local.set({ events: events });
         });
-        
-        if (this.recentLogs.size > 1000) {
-           const expiry = now - 10000;
-           for (const [key, time] of this.recentLogs.entries()) {
-             if (time < expiry) this.recentLogs.delete(key);
-           }
+      }
+
+      // Single atomic read-modify-write — no race condition
+      if (payloads.length > 0) {
+        const result = await chrome.storage.local.get({ events: [] });
+        const events = [...payloads, ...result.events].slice(0, 500);
+        await chrome.storage.local.set({ events });
+        console.log(`🛰️ Shoonya: Logged ${payloads.length} event(s) to dashboard`);
+      }
+
+      if (this.recentLogs.size > 1000) {
+        const expiry = now - 10000;
+        for (const [key, time] of this.recentLogs.entries()) {
+          if (time < expiry) this.recentLogs.delete(key);
         }
       }
     } catch (err) {
